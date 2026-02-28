@@ -74,22 +74,10 @@ export async function POST(request) {
     const data = await request.json();
 
     if (Array.isArray(data.records)) {
-      const pool = db.getPool();
-      const client = await pool.connect();
-      try {
-        await client.query('BEGIN');
-        for (const r of data.records) {
-          await client.query(
-            'INSERT INTO marks (student_id, subject_id, exam_type, max_marks, obtained_marks, semester, remarks) VALUES ($1,$2,$3,$4,$5,$6,$7)',
-            [r.student_id, r.subject_id, r.exam_type, r.max_marks, r.obtained_marks, r.semester, r.remarks]
-          );
-        }
-        await client.query('COMMIT');
-      } catch (e) {
-        await client.query('ROLLBACK');
-        throw e;
-      } finally {
-        client.release();
+      for (const r of data.records) {
+        await db.prepare(
+          'INSERT INTO marks (student_id, subject_id, exam_type, max_marks, obtained_marks, semester, remarks) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        ).run(r.student_id, r.subject_id, r.exam_type, r.max_marks, r.obtained_marks, r.semester, r.remarks || null);
       }
       return NextResponse.json({ message: `${data.records.length} marks records saved` });
     }

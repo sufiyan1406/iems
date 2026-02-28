@@ -1,12 +1,15 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // Use 'standalone' only for Docker; Vercel handles it automatically
+  // Standalone output for Docker deployment (uncomment for Docker)
   // output: 'standalone',
+
+  // better-sqlite3 needs to be external for local dev
+  serverExternalPackages: ['better-sqlite3'],
 
   // Production optimization
   poweredByHeader: false,
 
-  // Security headers (applied to all responses)
+  // Security headers
   async headers() {
     return [
       {
@@ -20,14 +23,12 @@ const nextConfig = {
         ],
       },
       {
-        // Cache static assets aggressively
         source: '/_next/static/(.*)',
         headers: [
           { key: 'Cache-Control', value: 'public, max-age=31536000, immutable' },
         ],
       },
       {
-        // No cache for API routes
         source: '/api/(.*)',
         headers: [
           { key: 'Cache-Control', value: 'no-store, no-cache, must-revalidate' },
@@ -36,13 +37,11 @@ const nextConfig = {
     ];
   },
 
-  // Image optimization
   images: {
     formats: ['image/avif', 'image/webp'],
     minimumCacheTTL: 60,
   },
 
-  // Compression
   compress: true,
 };
 

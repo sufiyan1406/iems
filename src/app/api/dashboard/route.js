@@ -69,14 +69,15 @@ export async function GET() {
       GROUP BY st.department
     `).all();
 
+    const fourteenDaysAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
     const attendanceTrend = await db.prepare(`
       SELECT date,
         ROUND(SUM(CASE WHEN status='present' THEN 1.0 ELSE 0 END) / COUNT(*) * 100, 1) as percentage
       FROM attendance
-      WHERE date >= (CURRENT_DATE - INTERVAL '14 days')::text
+      WHERE date >= ?
       GROUP BY date
       ORDER BY date ASC
-    `).all();
+    `).all(fourteenDaysAgo);
 
     const performanceDistribution = await db.prepare(`
       SELECT

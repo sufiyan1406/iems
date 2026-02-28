@@ -1,115 +1,130 @@
-import pg from 'pg';
+import path from 'path';
+import fs from 'fs';
 
-const { Pool } = pg;
+// ============================================
+// Dual-mode Database Layer
+// Auto-detects: SQLite (local dev) or PostgreSQL (production)
+//
+// All routes use the same async API:
+//   db.prepare(sql).get(...params)   → first row
+//   db.prepare(sql).all(...params)   → all rows  
+//   db.prepare(sql).run(...params)   → { changes, lastInsertRowid }
+// ============================================
 
-let pool = null;
+const DATABASE_URL = process.env.DATABASE_URL || '';
+const USE_POSTGRES = DATABASE_URL.startsWith('postgresql://') || DATABASE_URL.startsWith('postgres://');
 
-/**
- * Database abstraction layer for PostgreSQL
- * Provides the same API as better-sqlite3 so all route files work unchanged:
- *   db.prepare(sql).get(...params) → first row
- *   db.prepare(sql).all(...params) → all rows
- *   db.prepare(sql).run(...params) → { changes, lastInsertRowid }
- */
+let instance = null;
 
-function getPool() {
-  if (pool) return pool;
+// ---- SQLite Mode ----
+function createSqliteDb() {
+  const Database = require('better-sqlite3');
 
-  const connectionString = process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/iems';
+  const dbPath = path.join(process.cwd(), 'data', 'iems.db');
+  const dataDir = path.dirname(dbPath);
+  if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
-  pool = new Pool({
-    connectionString,
+  const sqlite = new Database(dbPath);
+  sqlite.pragma('journal_mode = WAL');
+  sqlite.pragma('foreign_keys = ON');
+
+  // Initialize schema
+  const schemaPath = path.join(process.cwd(), 'src', 'lib', 'schema-sqlite.sql');
+  if (fs.existsSync(schemaPath)) {
+    sqlite.exec(fs.readFileSync(schemaPath, 'utf8'));
+  }
+
+  // Wrap synchronous better-sqlite3 calls to return Promises
+  // so `await db.prepare(sql).get()` works identically to PG mode
+  return {
+    prepare: (sql) => ({
+      get: async (...params) => sqlite.prepare(sql).get(...params),
+      all: async (...params) => sqlite.prepare(sql).all(...params),
+      run: async (...params) => {
+        const result = sqlite.prepare(sql).run(...params);
+        return { changes: result.changes, lastInsertRowid: result.lastInsertRowid };
+      },
+    }),
+    exec: async (sql) => sqlite.exec(sql),
+    transaction: (fn) => {
+      // For SQLite transactions, we use better-sqlite3's native transaction
+      return async (...args) => {
+        const txFn = sqlite.transaction((...a) => fn(...a));
+        return txFn(...args);
+      };
+    },
+    getPool: () => null, // SQLite doesn't have a pool
+    _mode: 'sqlite',
+  };
+}
+
+// ---- PostgreSQL Mode ----
+function createPgDb() {
+  const pg = require('pg');
+  const { Pool } = pg;
+
+  const pool = new Pool({
+    connectionString: DATABASE_URL,
     max: 20,
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 5000,
   });
 
-  pool.on('error', (err) => {
-    console.error('Unexpected PostgreSQL pool error:', err);
-  });
+  pool.on('error', (err) => console.error('PostgreSQL pool error:', err));
 
-  return pool;
-}
-
-// Convert SQLite-style ? placeholders to PostgreSQL $1, $2, $3...
-function convertPlaceholders(sql) {
-  let index = 0;
-  return sql.replace(/\?/g, () => `$${++index}`);
-}
-
-// Wrapper that mimics better-sqlite3's prepare() API
-function prepare(sql) {
-  const pgSql = convertPlaceholders(sql);
-  const p = getPool();
+  // Convert ? placeholders to $1, $2, $3...
+  function convertPlaceholders(sql) {
+    let i = 0;
+    return sql.replace(/\?/g, () => `$${++i}`);
+  }
 
   return {
-    get: async (...params) => {
-      const result = await p.query(pgSql, params);
-      return result.rows[0] || undefined;
-    },
-    all: async (...params) => {
-      const result = await p.query(pgSql, params);
-      return result.rows;
-    },
-    run: async (...params) => {
-      const result = await p.query(pgSql + (pgSql.trim().toUpperCase().startsWith('INSERT') && !pgSql.includes('RETURNING') ? ' RETURNING id' : ''), params);
+    prepare: (sql) => {
+      const pgSql = convertPlaceholders(sql);
       return {
-        changes: result.rowCount,
-        lastInsertRowid: result.rows[0]?.id || null,
-      };
-    },
-  };
-}
-
-// Execute raw SQL (for schema init, migrations)
-async function exec(sql) {
-  const p = getPool();
-  await p.query(sql);
-}
-
-// Transaction wrapper
-function transaction(fn) {
-  return async (...args) => {
-    const client = await getPool().connect();
-    try {
-      await client.query('BEGIN');
-      // Create a transaction-scoped db that uses this client
-      const txDb = {
-        prepare: (sql) => {
-          const pgSql = convertPlaceholders(sql);
-          return {
-            get: async (...params) => { const r = await client.query(pgSql, params); return r.rows[0] || undefined; },
-            all: async (...params) => { const r = await client.query(pgSql, params); return r.rows; },
-            run: async (...params) => {
-              const fullSql = pgSql + (pgSql.trim().toUpperCase().startsWith('INSERT') && !pgSql.includes('RETURNING') ? ' RETURNING id' : '');
-              const r = await client.query(fullSql, params);
-              return { changes: r.rowCount, lastInsertRowid: r.rows[0]?.id || null };
-            },
-          };
+        get: async (...params) => {
+          const r = await pool.query(pgSql, params);
+          return r.rows[0] || undefined;
+        },
+        all: async (...params) => {
+          const r = await pool.query(pgSql, params);
+          return r.rows;
+        },
+        run: async (...params) => {
+          const fullSql = pgSql + (pgSql.trim().toUpperCase().startsWith('INSERT') && !pgSql.includes('RETURNING') ? ' RETURNING id' : '');
+          const r = await pool.query(fullSql, params);
+          return { changes: r.rowCount, lastInsertRowid: r.rows[0]?.id || null };
         },
       };
-      const result = await fn(txDb, ...args);
-      await client.query('COMMIT');
-      return result;
-    } catch (e) {
-      await client.query('ROLLBACK');
-      throw e;
-    } finally {
-      client.release();
-    }
+    },
+    exec: async (sql) => await pool.query(sql),
+    transaction: (fn) => {
+      return async (...args) => {
+        const client = await pool.connect();
+        try {
+          await client.query('BEGIN');
+          const result = await fn(...args);
+          await client.query('COMMIT');
+          return result;
+        } catch (e) {
+          await client.query('ROLLBACK');
+          throw e;
+        } finally {
+          client.release();
+        }
+      };
+    },
+    getPool: () => pool,
+    _mode: 'postgres',
   };
 }
 
-// The db object that all routes import
-const db = {
-  prepare,
-  exec,
-  transaction,
-  getPool,
-};
-
+// ---- Public API ----
 export function getDb() {
-  return db;
+  if (instance) return instance;
+  instance = USE_POSTGRES ? createPgDb() : createSqliteDb();
+  console.log(`📦 Database: ${instance._mode.toUpperCase()} mode`);
+  return instance;
 }
 
 export default getDb;
