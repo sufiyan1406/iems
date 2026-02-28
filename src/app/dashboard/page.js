@@ -17,6 +17,7 @@ export default function DashboardPage() {
 
     if (loading) return <div className="loading"><div className="spinner"></div><span className="loading-text">Loading dashboard...</span></div>;
     if (!data) return <div className="loading"><span>Failed to load dashboard</span></div>;
+    if (data.error) return <div className="loading"><span style={{ color: 'var(--danger)' }}>Error loading dashboard: {data.error}</span></div>;
 
     const { stats, recentAlerts, atRiskStudents, departmentStats, attendanceTrend, performanceDistribution } = data;
 
