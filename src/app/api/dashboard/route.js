@@ -15,13 +15,13 @@ export async function GET() {
     const totalSubjects = totalSubjectsRow.count;
 
     const avgAttendanceRow = await db.prepare(`
-      SELECT ROUND(SUM(CASE WHEN status='present' THEN 1.0 ELSE 0 END) / COUNT(*) * 100, 1) as avg
+      SELECT ROUND(CAST(SUM(CASE WHEN status='present' THEN 1.0 ELSE 0 END) / COUNT(*) * 100 AS numeric), 1) as avg
       FROM attendance
     `).get();
     const avgAttendance = avgAttendanceRow.avg || 0;
 
     const avgPerformanceRow = await db.prepare(`
-      SELECT ROUND(AVG(obtained_marks / max_marks * 100), 1) as avg FROM marks
+      SELECT ROUND(CAST(AVG(obtained_marks * 1.0 / max_marks * 100) AS numeric), 1) as avg FROM marks
     `).get();
     const avgPerformance = avgPerformanceRow.avg || 0;
 
@@ -44,12 +44,12 @@ export async function GET() {
 
     const atRiskStudents = await db.prepare(`
       SELECT st.id, st.name, st.enrollment_no, st.department,
-        ROUND(SUM(CASE WHEN a.status='present' THEN 1.0 ELSE 0 END) / COUNT(*) * 100, 1) as attendance_pct
+        ROUND(CAST(SUM(CASE WHEN a.status='present' THEN 1.0 ELSE 0 END) / COUNT(*) * 100 AS numeric), 1) as attendance_pct
       FROM attendance a
       JOIN students st ON a.student_id = st.id
       WHERE st.status = 'active'
       GROUP BY st.id, st.name, st.enrollment_no, st.department
-      HAVING ROUND(SUM(CASE WHEN a.status='present' THEN 1.0 ELSE 0 END) / COUNT(*) * 100, 1) < 70
+      HAVING ROUND(CAST(SUM(CASE WHEN a.status='present' THEN 1.0 ELSE 0 END) / COUNT(*) * 100 AS numeric), 1) < 70
       ORDER BY attendance_pct ASC
       LIMIT 15
     `).all();
@@ -58,11 +58,11 @@ export async function GET() {
       SELECT
         st.department,
         COUNT(DISTINCT st.id) as student_count,
-        ROUND(AVG(sub_att.pct), 1) as avg_attendance
+        ROUND(CAST(AVG(sub_att.pct) AS numeric), 1) as avg_attendance
       FROM students st
       LEFT JOIN (
         SELECT student_id,
-          ROUND(SUM(CASE WHEN status='present' THEN 1.0 ELSE 0 END) / COUNT(*) * 100, 1) as pct
+          ROUND(CAST(SUM(CASE WHEN status='present' THEN 1.0 ELSE 0 END) / COUNT(*) * 100 AS numeric), 1) as pct
         FROM attendance GROUP BY student_id
       ) sub_att ON st.id = sub_att.student_id
       WHERE st.status = 'active'
@@ -72,7 +72,7 @@ export async function GET() {
     const fourteenDaysAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
     const attendanceTrend = await db.prepare(`
       SELECT date,
-        ROUND(SUM(CASE WHEN status='present' THEN 1.0 ELSE 0 END) / COUNT(*) * 100, 1) as percentage
+        ROUND(CAST(SUM(CASE WHEN status='present' THEN 1.0 ELSE 0 END) / COUNT(*) * 100 AS numeric), 1) as percentage
       FROM attendance
       WHERE date >= ?
       GROUP BY date
@@ -91,7 +91,7 @@ export async function GET() {
         END as grade,
         COUNT(*) as count
       FROM (
-        SELECT student_id, AVG(obtained_marks / max_marks * 100) as avg_pct
+        SELECT student_id, AVG(obtained_marks * 1.0 / max_marks * 100) as avg_pct
         FROM marks GROUP BY student_id
       ) sub
       GROUP BY grade
